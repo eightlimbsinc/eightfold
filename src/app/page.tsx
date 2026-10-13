@@ -1,69 +1,68 @@
-import Image from "next/image";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { ArrowRight, Building2, KanbanSquare, ShieldCheck, Users } from "lucide-react";
+import { Wordmark } from "@/components/brand";
+import { Button } from "@/components/ui/button";
+import { getSession } from "@/server/request";
 
-export default function Home() {
+export default async function HomePage() {
+  if (await getSession()) redirect("/app");
+  const features = [
+    { icon: Building2, title: "Agency → client workspaces", body: "Run every client account in its own isolated workspace, managed from one agency." },
+    { icon: Users, title: "CRM built for volume", body: "Contacts, tags, custom fields, notes, tasks and a complete activity history." },
+    { icon: KanbanSquare, title: "Pipelines that move", body: "Configurable stages, a drag-and-drop board, and live pipeline totals." },
+    { icon: ShieldCheck, title: "Secure by default", body: "Server-side authorization, tenant isolation, and an audit trail of sensitive actions." },
+  ];
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="min-h-screen bg-surface">
+      <header className="border-b border-line">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
+          <Wordmark />
+          <div className="flex items-center gap-2">
+            <Button asChild variant="ghost">
+              <Link href="/sign-in">Sign in</Link>
+            </Button>
+            <Button asChild>
+              <Link href="/sign-up">Get started</Link>
+            </Button>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+      </header>
+      <main>
+        <section className="bg-navy-900">
+          <div className="mx-auto max-w-6xl px-6 py-20 sm:py-24">
+            <p className="text-[13px] font-medium uppercase tracking-[0.14em] text-gold-400">Eightfold by 8limbs Inc.</p>
+            <h1 className="mt-4 max-w-3xl text-[36px] leading-[1.1] font-semibold tracking-[-0.025em] text-white sm:text-[46px]">
+              The operating system for agencies that manage many clients.
+            </h1>
+            <p className="mt-5 max-w-2xl text-[16px] leading-relaxed text-navy-100/75">
+              One platform for client workspaces, contacts, and sales pipelines — with automation, communications, and websites on the roadmap.
+            </p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Button asChild variant="accent" size="lg">
+                <Link href="/sign-up">
+                  Create your agency <ArrowRight />
+                </Link>
+              </Button>
+              <Button asChild size="lg" className="border border-navy-600 bg-transparent hover:bg-navy-800">
+                <Link href="/sign-in">Sign in</Link>
+              </Button>
+            </div>
+          </div>
+        </section>
+        <section className="mx-auto grid max-w-6xl gap-px overflow-hidden border-x border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
+          {features.map(({ icon: Icon, title, body }) => (
+            <div key={title} className="bg-surface p-6">
+              <Icon className="size-5 text-gold-600" aria-hidden />
+              <h2 className="mt-3 text-[14.5px] font-semibold">{title}</h2>
+              <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink-muted">{body}</p>
+            </div>
+          ))}
+        </section>
       </main>
+      <footer className="border-t border-line">
+        <div className="mx-auto max-w-6xl px-6 py-6 text-[12.5px] text-ink-faint">© {new Date().getFullYear()} 8limbs Inc. All rights reserved.</div>
+      </footer>
     </div>
   );
 }
