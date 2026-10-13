@@ -1,0 +1,596 @@
+// Eightfold database schema.
+//
+// Ownership legend (see docs/DATABASE.md):
+//   [platform]  global / authentication data
+//   [user]      owned by a single user
+//   [agency]    owned by an agency (tenant root)
+//   [workspace] owned by a client workspace (belongs to exactly one agency)
+//
+// Tenant integrity: workspace-owned child rows that reference other
+// workspace-owned rows use composite foreign keys on (id, workspaceId) where the
+// relation is required, so the database itself rejects cross-workspace links.
+// Optional cross-references (e.g. Task.contactId) are validated in the service
+// layer inside the same transaction as the write.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Authentication (Better Auth core tables)
+// ---------------------------------------------------------------------------
+
+/// [platform] An authenticated person. Managed by Better Auth.
+model User {
+  id              String   @id
+  name            String
+  email           String   @unique
+  emailVerified   Boolean  @default(false)
+  image           String?
+  /// Platform administration is separate from agency administration and can
+  /// only be granted directly in the database (never through user input).
+  isPlatformAdmin Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sessions Session[]
+  accounts Account[]
+
+  agencyMemberships    AgencyMember[]
+  workspaceMemberships WorkspaceMember[]
+  invitationsSent      Invitation[]      @relation("InvitationInviter")
+  invitationsAccepted  Invitation[]      @relation("InvitationAcceptor")
+  agenciesCreated      Agency[]          @relation("AgencyCreator")
+
+  contactsAssigned      Contact[]      @relation("ContactAssignee")
+  contactsCreated       Contact[]      @relation("ContactCreator")
+  opportunitiesAssigned Opportunity[]  @relation("OpportunityAssignee")
+  opportunitiesCreated  Opportunity[]  @relation("OpportunityCreator")
+  tasksAssigned         Task[]         @relation("TaskAssignee")
+  tasksCreated          Task[]         @relation("TaskCreator")
+  tasksCompleted        Task[]         @relation("TaskCompleter")
+  notes                 Note[]
+  activities            Activity[]
+  auditLogs             AuditLog[]
+  notifications         Notification[]
+  contactTagsAdded      ContactTag[]
+}
+
+/// [user] A login session. Token is an opaque random value stored server-side.
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// [user] Credential or OAuth account. `password` holds a scrypt hash, never plaintext.
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+/// [platform] Short-lived verification tokens (password reset, email verification).
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+/// [platform] Auth endpoint rate-limit counters (persisted so limits survive restarts).
+model RateLimit {
+  id          String @id
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+enum AgencyRole {
+  OWNER
+  ADMIN
+}
+
+enum WorkspaceRole {
+  ADMIN
+  MEMBER
+}
+
+/// Role granted by an invitation. Agency-level roles grant access to every
+/// workspace in the agency; workspace-level roles require `workspaceId`.
+enum InvitationRole {
+  AGENCY_OWNER
+  AGENCY_ADMIN
+  WORKSPACE_ADMIN
+  WORKSPACE_MEMBER
+}
+
+/// Duplicate-contact detection policy, configurable per workspace.
+enum DuplicatePolicy {
+  NONE
+  EMAIL
+  EMAIL_OR_PHONE
+}
+
+/// [agency] Tenant root. An agency manages many client workspaces.
+model Agency {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  createdById String?
+  createdBy   User?    @relation("AgencyCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     AgencyMember[]
+  workspaces  Workspace[]
+  invitations Invitation[]
+  auditLogs   AuditLog[]
+}
+
+/// [agency] Agency-level membership. Owners and admins can access every
+/// workspace in the agency.
+model AgencyMember {
+  id        String     @id @default(cuid())
+  agencyId  String
+  agency    Agency     @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      AgencyRole
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([agencyId, userId])
+  @@index([userId])
+}
+
+/// [agency] A client workspace. Owns CRM data.
+model Workspace {
+  id              String          @id @default(cuid())
+  agencyId        String
+  agency          Agency          @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  name            String
+  slug            String
+  timezone        String          @default("UTC")
+  currency        String          @default("USD")
+  duplicatePolicy DuplicatePolicy @default(EMAIL)
+  archivedAt      DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  members          WorkspaceMember[]
+  invitations      Invitation[]
+  contacts         Contact[]
+  fieldDefinitions ContactFieldDefinition[]
+  fieldValues      ContactFieldValue[]
+  tags             Tag[]
+  contactTags      ContactTag[]
+  pipelines        Pipeline[]
+  stages           PipelineStage[]
+  opportunities    Opportunity[]
+  tasks            Task[]
+  notes            Note[]
+  activities       Activity[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+
+  @@unique([agencyId, slug])
+  @@index([agencyId])
+}
+
+/// [workspace] Explicit access grant to a single workspace.
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        WorkspaceRole
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+/// [agency] Pending invitation. Only a SHA-256 hash of the token is stored;
+/// the raw token is shown once to the inviter as a link.
+model Invitation {
+  id           String         @id @default(cuid())
+  agencyId     String
+  agency       Agency         @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  workspaceId  String?
+  workspace    Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  email        String
+  role         InvitationRole
+  tokenHash    String         @unique
+  invitedById  String?
+  invitedBy    User?          @relation("InvitationInviter", fields: [invitedById], references: [id], onDelete: SetNull)
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  acceptedById String?
+  acceptedBy   User?          @relation("InvitationAcceptor", fields: [acceptedById], references: [id], onDelete: SetNull)
+  revokedAt    DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([agencyId, createdAt])
+  @@index([workspaceId])
+  @@index([email])
+}
+
+// ---------------------------------------------------------------------------
+// CRM
+// ---------------------------------------------------------------------------
+
+enum LifecycleStatus {
+  LEAD
+  QUALIFIED
+  CUSTOMER
+  INACTIVE
+}
+
+/// [workspace] A person or lead. All identifying fields are optional, but the
+/// service layer requires at least one of name, email, or phone.
+model Contact {
+  id              String          @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  firstName       String?
+  lastName        String?
+  email           String?
+  /// Lower-cased, trimmed email used for search and duplicate detection.
+  emailNormalized String?
+  phone           String?
+  /// Digits only (with leading + preserved) used for search and duplicate detection.
+  phoneNormalized String?
+  company         String?
+  source          String?
+  lifecycleStatus LifecycleStatus @default(LEAD)
+  assignedToId    String?
+  assignedTo      User?           @relation("ContactAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdById     String?
+  createdBy       User?           @relation("ContactCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  archivedAt      DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  tags          ContactTag[]
+  fieldValues   ContactFieldValue[]
+  opportunities Opportunity[]
+  tasks         Task[]
+  notes         Note[]
+  activities    Activity[]
+
+  @@unique([id, workspaceId])
+  @@index([workspaceId, archivedAt, createdAt])
+  @@index([workspaceId, emailNormalized])
+  @@index([workspaceId, phoneNormalized])
+  @@index([workspaceId, lastName, firstName])
+  @@index([workspaceId, assignedToId])
+}
+
+enum CustomFieldType {
+  TEXT
+  NUMBER
+  DATE
+  BOOLEAN
+  SINGLE_SELECT
+  MULTI_SELECT
+}
+
+/// [workspace] Reusable custom-field definition for contacts.
+/// `type` is immutable once created (enforced by the service layer).
+model ContactFieldDefinition {
+  id          String          @id @default(cuid())
+  workspaceId String
+  workspace   Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  key         String
+  label       String
+  type        CustomFieldType
+  /// Allowed options for SINGLE_SELECT / MULTI_SELECT. Empty for other types.
+  options     String[]        @default([])
+  required    Boolean         @default(false)
+  position    Int             @default(0)
+  archivedAt  DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  values ContactFieldValue[]
+
+  @@unique([workspaceId, key])
+  @@unique([id, workspaceId])
+}
+
+/// [workspace] Typed value storage for a custom field. Exactly one value
+/// column is populated, matching the definition type.
+model ContactFieldValue {
+  id           String                 @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contactId    String
+  contact      Contact                @relation(fields: [contactId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  fieldId      String
+  field        ContactFieldDefinition @relation(fields: [fieldId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  textValue    String?
+  numberValue  Float?
+  dateValue    DateTime?              @db.Date
+  boolValue    Boolean?
+  optionValues String[]               @default([])
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  @@unique([contactId, fieldId])
+  @@index([workspaceId, fieldId])
+}
+
+/// [workspace] Label for segmenting contacts.
+model Tag {
+  id             String       @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name           String
+  nameNormalized String
+  color          String       @default("slate")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  contacts ContactTag[]
+
+  @@unique([workspaceId, nameNormalized])
+  @@unique([id, workspaceId])
+}
+
+/// [workspace] Contact ↔ Tag assignment.
+model ContactTag {
+  contactId   String
+  contact     Contact   @relation(fields: [contactId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  tagId       String
+  tag         Tag       @relation(fields: [tagId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  addedById   String?
+  addedBy     User?     @relation(fields: [addedById], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  @@id([contactId, tagId])
+  @@index([workspaceId, tagId])
+}
+
+// ---------------------------------------------------------------------------
+// Sales pipelines
+// ---------------------------------------------------------------------------
+
+/// [workspace] A sales pipeline made of ordered stages.
+model Pipeline {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String
+  position    Int       @default(0)
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  stages        PipelineStage[]
+  opportunities Opportunity[]
+
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, name])
+}
+
+/// [workspace] A stage within a pipeline. Cannot be deleted while
+/// opportunities reference it (ON DELETE RESTRICT).
+model PipelineStage {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pipelineId  String
+  pipeline    Pipeline  @relation(fields: [pipelineId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  name        String
+  position    Int
+  /// Optional win probability (0–100) used for weighted forecasts.
+  probability Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  opportunities Opportunity[]
+
+  @@unique([id, pipelineId])
+  @@index([pipelineId, position])
+}
+
+enum OpportunityStatus {
+  OPEN
+  WON
+  LOST
+}
+
+/// [workspace] A deal moving through a pipeline. The composite FK to
+/// PipelineStage guarantees the stage belongs to the opportunity's pipeline.
+model Opportunity {
+  id                String            @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pipelineId        String
+  pipeline          Pipeline          @relation(fields: [pipelineId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  stageId           String
+  stage             PipelineStage     @relation(fields: [stageId, pipelineId], references: [id, pipelineId], onDelete: Restrict)
+  contactId         String?
+  contact           Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  name              String
+  /// Monetary value in minor units (cents) of the workspace currency.
+  valueCents        Int               @default(0)
+  status            OpportunityStatus @default(OPEN)
+  expectedCloseDate DateTime?         @db.Date
+  source            String?
+  assignedToId      String?
+  assignedTo        User?             @relation("OpportunityAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdById       String?
+  createdBy         User?             @relation("OpportunityCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  stageChangedAt    DateTime          @default(now())
+  closedAt          DateTime?
+  archivedAt        DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  tasks      Task[]
+  notes      Note[]
+  activities Activity[]
+
+  @@index([workspaceId, pipelineId, stageId])
+  @@index([workspaceId, status])
+  @@index([contactId])
+}
+
+// ---------------------------------------------------------------------------
+// Tasks, notes, activity
+// ---------------------------------------------------------------------------
+
+/// [workspace] A to-do, optionally linked to a contact and/or opportunity.
+model Task {
+  id            String       @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  title         String
+  description   String?
+  dueAt         DateTime?
+  completedAt   DateTime?
+  completedById String?
+  completedBy   User?        @relation("TaskCompleter", fields: [completedById], references: [id], onDelete: SetNull)
+  assigneeId    String?
+  assignee      User?        @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  contactId     String?
+  contact       Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  createdById   String?
+  createdBy     User?        @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([workspaceId, completedAt, dueAt])
+  @@index([assigneeId, completedAt])
+  @@index([contactId])
+  @@index([opportunityId])
+}
+
+/// [workspace] Free-text note on a contact and/or opportunity.
+model Note {
+  id            String       @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  body          String
+  contactId     String?
+  contact       Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  authorId      String?
+  author        User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([contactId, createdAt])
+  @@index([opportunityId, createdAt])
+  @@index([workspaceId, createdAt])
+}
+
+/// [workspace] Append-only business timeline event. `type` is a dotted string
+/// (e.g. "contact.created", "opportunity.stage_changed") validated in code so
+/// future modules (email, SMS, workflows, appointments) can add event types
+/// without a schema migration. Subject-specific data lives in `metadata`.
+model Activity {
+  id            String       @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  type          String
+  actorId       String?
+  actor         User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  contactId     String?
+  contact       Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  /// Generic subject pointer for future entity types (e.g. "task", "message").
+  entityType    String?
+  entityId      String?
+  metadata      Json         @default("{}")
+  createdAt     DateTime     @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([contactId, createdAt])
+  @@index([opportunityId, createdAt])
+}
+
+/// [agency|workspace] Security and administrative audit trail. Rows survive
+/// deletion of the actor (SET NULL) and are never edited by the application.
+model AuditLog {
+  id          String     @id @default(cuid())
+  agencyId    String?
+  agency      Agency?    @relation(fields: [agencyId], references: [id], onDelete: SetNull)
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  actorId     String?
+  actor       User?      @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action      String
+  targetType  String?
+  targetId    String?
+  metadata    Json       @default("{}")
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime   @default(now())
+
+  @@index([agencyId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+/// [user] In-app notification (e.g. a task was assigned to you).
+model Notification {
+  id          String     @id @default(cuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  type        String
+  title       String
+  body        String?
+  href        String?
+  readAt      DateTime?
+  createdAt   DateTime   @default(now())
+
+  @@index([userId, readAt, createdAt])
+}
